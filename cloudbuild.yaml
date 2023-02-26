@@ -36,10 +36,54 @@ steps:
         if [ $(cat /tmp/result) -ne 0 ]; then
           set -e
           #create the connection
-          /tmp/integrationcli connectors create -n $(basename -s .json $connection) -f $connection -g=true --sa ${_SERVICE_ACCOUNT_NAME} > /tmp/response
+          if [ ${_DEFAULT_SA} = "false" ]; then
+            _CMD=" --sa ${_SERVICE_ACCOUNT_NAME}"
+          fi
+
+          if [ ${_ENCRYPTED} = "true" ]; then
+            _CMD=${_CMD}" -k locations/$LOCATION/keyRings/${_KMS_RING_NAME}/cryptoKeys/${_KMS_KEY_NAME}"
+          fi
+
+          if [ ${_GRANT_PERMISSION} = "true" ]; then
+            _CMD=${_CMD}" --g=true"
+          fi
+
+          /tmp/integrationcli connectors create -n $(basename -s .json $connection) -f $connection ${_CMD} > /tmp/response
+
+          fi
           echo "connector response: " $(cat /tmp/response)
         fi
       done
+
+- id: 'Create authconfigs if not present'
+  name: ghcr.io/srinandan/integrationcli-builder:latest
+  entrypoint: 'bash'
+  args:
+    - -c
+    - |
+      gcloud auth print-access-token > /tmp/token
+
+      #setup preferences
+      /tmp/integrationcli prefs set integrationcli prefs set --nocheck=true --apigee-integration=false --reg=$LOCATION --proj=$PROJECT_ID
+      /tmp/integrationcli token cache -t $(cat /tmp/token)
+
+      #find authconfigs
+      for authconfig in ./authconfigs/*.json
+      do
+        /tmp/integrationcli authconfigs get -n  $(basename -s .json $authconfig) 2>&1 >/dev/null
+        echo $? > /tmp/result
+        if [ $(cat /tmp/result) -ne 0 ]; then
+          set -e
+          #create the authconfig
+          if [ ${_ENCRYPTED} = "false" ]; then
+            /tmp/integrationcli authconfigs create -f $authconfig > /tmp/response
+          else
+            /tmp/integrationcli authconfigs create -e $authconfig -k locations/$LOCATION/keyRings/${_KMS_RING_NAME}/cryptoKeys/${_KMS_KEY_NAME} > /tmp/response
+          fi
+          echo "authconfig response: " $(cat /tmp/response)
+        fi
+      done
+
 
 - id: 'Create and publish the integration version'
   name: ghcr.io/srinandan/integrationcli-builder:latest
@@ -71,7 +115,12 @@ steps:
 
 #the name of the service account  to use when setting up the connector
 substitutions:
+  _GRANT_PERMISSIONS: "true"
+  _ENCRYPTED: "false"
+  _DEFAULT_SA: "false"
   _SERVICE_ACCOUNT_NAME: "connectors"
+  _KMS_RING_NAME: "app-integration"
+  _KMS_KEY_NAME: "integration"
 
 options:
   logging: CLOUD_LOGGING_ONLY
